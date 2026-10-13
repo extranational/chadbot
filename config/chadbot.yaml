@@ -1,0 +1,15 @@
+corpus_manifest: config/corpus.yaml
+retrieval:
+  max_num_results: 8
+  match_threshold: 0.4      # tuned in Phase 4
+  rerank: true
+generation:
+  provider: workers-ai       # workers-ai | external
+  model: "@cf/meta/llama-4-scout-17b-16e-instruct"
+  max_tokens: 900
+  temperature: 0.1
+serving:
+  rate_limit_per_ip_per_hour: 20
+  monthly_query_ceiling: 3000
+abstain:
+  message: "That isn't covered by the passkeys material I have. I can answer questions about WebAuthn, passkey registration and authentication, recovery, and phishing resistance."
