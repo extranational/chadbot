@@ -1,0 +1,28 @@
+# OPERATOR WIRES THE REAL RESOURCES. Nothing here has been deployed or verified against Cloudflare.
+name = "chadbot"
+main = "src/worker.ts"
+compatibility_date = "2026-10-01"
+# config.ts / corpus.ts import node:fs for their file loaders (unused in the Worker).
+compatibility_flags = ["nodejs_compat"]
+
+# config/*.yaml are bundled as text modules (src/worker.ts).
+[[rules]]
+type = "Text"
+globs = ["**/*.yaml"]
+fallthrough = true
+
+# Workers AI (generation, routed through AI Gateway).
+[ai]
+binding = "AI"
+
+# KV namespace for rate-limit and monthly counters. Create it and put the id here.
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# AI Search instance binding named AI_SEARCH (search() is the only method used).
+# The wrangler stanza for it was NOT guessed; add it per Cloudflare's AI Search binding docs.
+
+[vars]
+AI_GATEWAY_ID = "REPLACE_WITH_GATEWAY_ID"
+# For generation.provider = "external" also set CF_ACCOUNT_ID (var) and CF_AIG_TOKEN (wrangler secret).
