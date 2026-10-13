@@ -11,9 +11,19 @@ import { loadManifest, type CorpusEntry } from "../src/corpus";
 import { toMarkdown } from "../src/ingest/convert";
 import { checkOptOut, evaluateResponseSignals, type Fetcher } from "../src/ingest/optout";
 
+/** AI Search file-size limits: 4 MiB for non-OCR formats, 10 MiB when OCR applies. */
+export const MAX_BYTES = 4 * 1024 * 1024;
+export const MAX_BYTES_OCR = 10 * 1024 * 1024;
+// Only MAX_BYTES is enforced: whether OCR will apply to a given PDF is unknowable here, and
+// image formats (the OCR case) are not accepted by this CLI. Fail closed on the lower limit.
+const sizeReason = (n: number): string =>
+  `file size ${n} bytes exceeds AI Search limit of 4 MiB (${MAX_BYTES} bytes) (fail closed)`;
+
 export interface UploadItem {
   key: string;
-  markdown: string;
+  /** Markdown text (converted from HTML) or the untouched bytes of a PDF. */
+  content: string | Uint8Array;
+  content_type: string;
   metadata: {
     source_id: string;
     source_url: string;
@@ -87,27 +97,63 @@ export async function runIngest(deps: Deps, opts: Options): Promise<IngestResult
         row("skipped", `content fetch returned HTTP ${page.status} (fail closed)`);
         continue;
       }
-      const contentType = page.headers.get("content-type");
-      const isHtml = /html/i.test(contentType ?? "");
-      // Unsupported types (e.g. PDF) are rejected before the body is read.
-      if (!isHtml && !/^(text\/markdown|text\/plain)/i.test(contentType ?? "")) {
-        toMarkdown("", contentType); // throws UnsupportedContentError with the reason
-      }
-      const body = await page.text();
-      const signals = evaluateResponseSignals(page.headers, isHtml ? body : "");
-      if (!signals.allowed) {
-        row("skipped", `opt-out gate (content response): ${signals.reasons.join("; ")}`);
+      const contentType = (page.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+      const isPdf = contentType === "application/pdf";
+      const isHtml = contentType === "text/html" || contentType === "application/xhtml+xml";
+      if (!isPdf && !isHtml && contentType !== "text/markdown" && contentType !== "text/plain") {
+        row("skipped", `unsupported content-type ${JSON.stringify(contentType || "unknown")} (fail closed)`);
         continue;
       }
 
-      const markdown = toMarkdown(body, contentType);
-      if (markdown.length === 0) {
-        row("skipped", "converted content is empty");
+      // AI Search size limit, checked on the declared length before reading and again on the bytes.
+      const declared = Number(page.headers.get("content-length"));
+      if (Number.isFinite(declared) && declared > MAX_BYTES) {
+        row("skipped", sizeReason(declared));
+        continue;
+      }
+
+      let content: string | Uint8Array;
+      let storedType: string;
+      let key: string;
+      if (isPdf) {
+        // Bytes are handed over untouched: AI Search converts PDF to markdown itself.
+        const bytes = new Uint8Array(await page.arrayBuffer());
+        if (bytes.byteLength > MAX_BYTES) {
+          row("skipped", sizeReason(bytes.byteLength));
+          continue;
+        }
+        const signals = evaluateResponseSignals(page.headers);
+        if (!signals.allowed) {
+          row("skipped", `opt-out gate (content response): ${signals.reasons.join("; ")}`);
+          continue;
+        }
+        content = bytes;
+        storedType = "application/pdf";
+        key = `${e.source_id}.pdf`;
+      } else {
+        const body = await page.text();
+        const size = new TextEncoder().encode(body).byteLength;
+        if (size > MAX_BYTES) {
+          row("skipped", sizeReason(size));
+          continue;
+        }
+        const signals = evaluateResponseSignals(page.headers, isHtml ? body : "");
+        if (!signals.allowed) {
+          row("skipped", `opt-out gate (content response): ${signals.reasons.join("; ")}`);
+          continue;
+        }
+        content = toMarkdown(body, contentType);
+        storedType = "text/markdown";
+        key = `${e.source_id}.md`;
+      }
+      if (content.length === 0) {
+        row("skipped", "content is empty");
         continue;
       }
       items.push({
-        key: `${e.source_id}.md`,
-        markdown,
+        key,
+        content,
+        content_type: storedType,
         metadata: {
           source_id: e.source_id,
           source_url: e.url,

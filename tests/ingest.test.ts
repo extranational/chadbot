@@ -10,7 +10,24 @@ const pointerHosts = manifest.filter((e) => e.mode === "pointer").map((e) => new
 
 function res(status: number, body = "", headers: Record<string, string> = {}): FetchedResponse {
   const h = new Map(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
-  return { status, headers: { get: (n: string) => h.get(n.toLowerCase()) ?? null }, text: async () => body };
+  return {
+    status,
+    headers: { get: (n: string) => h.get(n.toLowerCase()) ?? null },
+    text: async () => body,
+    arrayBuffer: async () => new TextEncoder().encode(body).buffer as ArrayBuffer,
+  };
+}
+
+function bigPdf(bytes: number, headers: Record<string, string> = {}): FetchedResponse {
+  const buf = new Uint8Array(bytes);
+  return {
+    status: 200,
+    headers: { get: (n: string) => ({ "content-type": "application/pdf", ...headers })[n.toLowerCase()] ?? null },
+    text: async () => {
+      throw new Error("PDF body must not be read as text");
+    },
+    arrayBuffer: async () => buf.buffer as ArrayBuffer,
+  };
 }
 
 interface FixtureOpts {
@@ -27,6 +44,8 @@ function fixtureFetcher(opts: FixtureOpts = {}) {
     let r: FetchedResponse | Error | undefined;
     if (url.endsWith("/robots.txt")) {
       r = opts.robots?.(new URL(url).origin) ?? res(200, "User-agent: *\nAllow: /\n");
+    } else if (url.endsWith("/.well-known/tdmrep.json") || url.endsWith("/tdm.txt")) {
+      r = res(404);
     } else {
       r = opts.page?.(url, method);
       r ??= url.endsWith(".pdf")
@@ -92,8 +111,16 @@ describe("ingest: provenance", () => {
         attribution: entry.attribution,
         retrieval_date: "2026-10-13",
       });
-      expect(item.markdown.length).toBeGreaterThan(0);
-      expect(item.key).toBe(`${entry.source_id}.md`);
+      expect(item.content.length).toBeGreaterThan(0);
+      if (entry.url.endsWith(".pdf")) {
+        expect(item.key).toBe(`${entry.source_id}.pdf`);
+        expect(item.content_type).toBe("application/pdf");
+        expect(item.content).toBeInstanceOf(Uint8Array);
+      } else {
+        expect(item.key).toBe(`${entry.source_id}.md`);
+        expect(item.content_type).toBe("text/markdown");
+        expect(typeof item.content).toBe("string");
+      }
     }
   });
 });
@@ -141,14 +168,84 @@ describe("ingest: opt-out gate integration", () => {
 });
 
 describe("ingest: conversion", () => {
-  it("skips PDFs with an explicit reason (no PDF extractor is wired in)", async () => {
+  it("collects PDF bytes untouched (AI Search converts PDFs; we do no extraction)", async () => {
     const { fetcher } = fixtureFetcher();
     const out = await runIngest({ manifest, fetcher, uploader: spyUploader().uploader, now: NOW }, { dryRun: true });
     for (const id of ["nist-sp800-63b-4", "cisa-phishing-resistant-mfa"]) {
-      const row = out.report.find((r) => r.source_id === id)!;
-      expect(row.status).toBe("skipped");
-      expect(row.reason).toMatch(/pdf/i);
+      expect(out.report.find((r) => r.source_id === id)!.status).toBe("indexed");
+      const item = out.items.find((i) => i.metadata.source_id === id)!;
+      expect(item.content_type).toBe("application/pdf");
+      expect(new TextDecoder().decode(item.content as Uint8Array)).toBe("%PDF-1.7");
     }
+  });
+
+  it("all 12 full sources are indexed and all 6 skipped are pointers when nothing is blocked", async () => {
+    const { fetcher } = fixtureFetcher();
+    const out = await runIngest({ manifest, fetcher, uploader: spyUploader().uploader, now: NOW }, { dryRun: true });
+    expect(out.report.filter((r) => r.status === "indexed").length).toBe(12);
+    expect(out.report.filter((r) => r.status === "skipped").map((r) => r.source_id).sort()).toEqual([...POINTER_IDS].sort());
+  });
+
+  it("still skips content types it cannot hand over (e.g. application/zip)", async () => {
+    const { fetcher } = fixtureFetcher({ page: (u, m) => (u.includes("rfc-editor") && m === "GET" ? res(200, "PK", { "content-type": "application/zip" }) : undefined) });
+    const out = await runIngest({ manifest, fetcher, uploader: spyUploader().uploader, now: NOW }, { dryRun: true });
+    expect(out.report.find((r) => r.source_id === "ietf-rfc8809")!.reason).toMatch(/unsupported content-type.*zip/);
+  });
+
+  it("nist-sp800-63b-4 end to end: robots.txt 404 (none published) + PDF => indexed", async () => {
+    const { fetcher, calls } = fixtureFetcher({
+      robots: (origin) => (new URL(origin).host === "nvlpubs.nist.gov" ? res(404) : res(200, "User-agent: *\nAllow: /\n")),
+    });
+    const out = await runIngest({ manifest, fetcher, uploader: spyUploader().uploader, now: NOW }, { dryRun: true, only: ["nist-sp800-63b-4"] });
+    const row = out.report.find((r) => r.source_id === "nist-sp800-63b-4")!;
+    expect(row.status).toBe("indexed");
+    expect(out.items).toHaveLength(1);
+    expect(out.items[0].content_type).toBe("application/pdf");
+    expect(calls).toContain("https://nvlpubs.nist.gov/robots.txt");
+  });
+
+  it("enforces AI Search's 4 MiB limit and fails closed above it, with a reason", async () => {
+    const MiB = 1024 * 1024;
+    for (const [bytes, headers] of [
+      [4 * MiB + 1, {}],
+      [10, { "content-length": String(5 * MiB) }], // declared size alone is enough
+    ] as const) {
+      const { fetcher } = fixtureFetcher({ page: (u, m) => (u.endsWith("NIST.SP.800-63b-4.pdf") && m === "GET" ? bigPdf(bytes, { ...headers }) : undefined) });
+      const out = await runIngest({ manifest, fetcher, uploader: spyUploader().uploader, now: NOW }, { dryRun: true, only: ["nist-sp800-63b-4"] });
+      const row = out.report.find((r) => r.source_id === "nist-sp800-63b-4")!;
+      expect(row.status).toBe("skipped");
+      expect(row.reason).toMatch(/exceeds.*4 MiB.*fail closed/i);
+      expect(out.items).toEqual([]);
+    }
+  });
+
+  it("accepts a PDF of exactly 4 MiB", async () => {
+    const { fetcher } = fixtureFetcher({ page: (u, m) => (u.endsWith("NIST.SP.800-63b-4.pdf") && m === "GET" ? bigPdf(4 * 1024 * 1024) : undefined) });
+    const out = await runIngest({ manifest, fetcher, uploader: spyUploader().uploader, now: NOW }, { dryRun: true, only: ["nist-sp800-63b-4"] });
+    expect(out.report.find((r) => r.source_id === "nist-sp800-63b-4")!.status).toBe("indexed");
+  });
+
+  it("a page whose HTML has a meta tdm-reservation: 1 is skipped (live path)", async () => {
+    const { fetcher } = fixtureFetcher({
+      page: (u, m) => (u.includes("wikipedia.org/wiki/WebAuthn") && m === "GET"
+        ? res(200, '<html><head><meta name="tdm-reservation" content="1"></head><body>x</body></html>', { "content-type": "text/html" })
+        : undefined),
+    });
+    const out = await runIngest({ manifest, fetcher, uploader: spyUploader().uploader, now: NOW }, { dryRun: true });
+    const row = out.report.find((r) => r.source_id === "wikipedia-webauthn")!;
+    expect(row.status).toBe("skipped");
+    expect(row.reason).toMatch(/meta tag.*tdm-reservation/);
+    expect(out.items.map((i) => i.metadata.source_id)).not.toContain("wikipedia-webauthn");
+  });
+
+  it("a page whose HTML has a meta content-signal with a no is skipped (live path)", async () => {
+    const { fetcher } = fixtureFetcher({
+      page: (u, m) => (u.includes("wikipedia.org/wiki/WebAuthn") && m === "GET"
+        ? res(200, '<meta name="content-signal" content="ai-input=no, search=yes">', { "content-type": "text/html" })
+        : undefined),
+    });
+    const out = await runIngest({ manifest, fetcher, uploader: spyUploader().uploader, now: NOW }, { dryRun: true });
+    expect(out.report.find((r) => r.source_id === "wikipedia-webauthn")!.reason).toMatch(/meta tag.*ai-input=no/);
   });
 
   it("htmlToMarkdown keeps headings, links and list items; drops scripts", () => {

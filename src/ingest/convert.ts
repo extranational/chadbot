@@ -27,5 +27,5 @@ export function toMarkdown(body: string, contentType: string | null): string {
   const ct = (contentType ?? "").split(";")[0].trim().toLowerCase();
   if (ct === "text/html" || ct === "application/xhtml+xml") return htmlToMarkdown(body);
   if (ct === "text/markdown" || ct === "text/plain") return body.trim();
-  throw new UnsupportedContentError(`unsupported content-type ${JSON.stringify(ct || "unknown")} (no extractor wired in${ct === "application/pdf" ? "; PDF text extraction not implemented" : ""})`);
+  throw new UnsupportedContentError(`unsupported content-type ${JSON.stringify(ct || "unknown")} (no converter)`);
 }

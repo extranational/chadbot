@@ -11,14 +11,30 @@ const URL_ = "https://example.test/docs/page";
 
 function res(status: number, body = "", headers: Record<string, string> = {}): FetchedResponse {
   const h = new Map(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
-  return { status, headers: { get: (n: string) => h.get(n.toLowerCase()) ?? null }, text: async () => body };
+  return {
+    status,
+    headers: { get: (n: string) => h.get(n.toLowerCase()) ?? null },
+    text: async () => body,
+    arrayBuffer: async () => new TextEncoder().encode(body).buffer as ArrayBuffer,
+  };
 }
 
-/** Fixture fetcher: robots.txt and page (HEAD) responses; no network. */
-function fx(robots: FetchedResponse | Error, page: FetchedResponse | Error = res(200)): Fetcher {
+interface Tdm {
+  json?: FetchedResponse | Error;
+  txt?: FetchedResponse | Error;
+}
+
+/** Fixture fetcher: robots.txt, TDM files (default 404 = absent) and page (HEAD); no network. */
+function fx(robots: FetchedResponse | Error, page: FetchedResponse | Error = res(200), tdm: Tdm = {}): Fetcher {
   return async (url, init) => {
-    const r = url.endsWith("/robots.txt") ? robots : page;
-    if (!url.endsWith("/robots.txt")) expect(init?.method).toBe("HEAD");
+    let r: FetchedResponse | Error;
+    if (url.endsWith("/robots.txt")) r = robots;
+    else if (url.endsWith("/.well-known/tdmrep.json")) r = tdm.json ?? res(404);
+    else if (url.endsWith("/tdm.txt")) r = tdm.txt ?? res(404);
+    else {
+      expect(init?.method).toBe("HEAD");
+      r = page;
+    }
     if (r instanceof Error) throw r;
     return r;
   };
@@ -132,12 +148,98 @@ describe("checkOptOut (fixtures, fails closed)", () => {
   });
 
   it("FAILS CLOSED: reading the robots body throws => blocked", async () => {
-    const broken: FetchedResponse = { status: 200, headers: { get: () => null }, text: async () => { throw new Error("reset"); } };
+    const broken: FetchedResponse = { ...res(200), text: async () => { throw new Error("reset"); } };
     expect((await checkOptOut(URL_, fx(broken))).allowed).toBe(false);
   });
 
-  it.each([401, 403, 404, 410, 429, 500, 503])("FAILS CLOSED: robots.txt status %i => blocked", async (status) => {
-    expect((await checkOptOut(URL_, fx(res(status)))).allowed).toBe(false);
+  // RFC 9309 §2.3.1.3: 4xx (except 429) = "Unavailable" => no robots policy => access allowed.
+  it.each([400, 401, 403, 404, 410, 451])("robots.txt HTTP %i is Unavailable => allowed (RFC 9309)", async (status) => {
+    expect((await checkOptOut(URL_, fx(res(status)))).allowed).toBe(true);
+  });
+
+  it.each([429, 500, 502, 503, 504])("FAILS CLOSED: robots.txt HTTP %i => blocked", async (status) => {
+    const r = await checkOptOut(URL_, fx(res(status)));
+    expect(r.allowed).toBe(false);
+    expect(r.reasons.join(" ")).toMatch(new RegExp(`HTTP ${status}.*fail closed`));
+  });
+
+  it("FAILS CLOSED: unparseable robots.txt (HTML soft-error page, or no directives) => blocked", async () => {
+    expect((await checkOptOut(URL_, fx(res(200, "<!doctype html><html><body>Oops</body></html>")))).allowed).toBe(false);
+    expect((await checkOptOut(URL_, fx(res(200, "this is not a robots file\nat all")))).allowed).toBe(false);
+  });
+
+  it("an explicit Disallow still blocks and the page is never touched", async () => {
+    const seen: string[] = [];
+    const inner = fx(res(200, "User-agent: *\nDisallow: /docs/\n"));
+    const r = await checkOptOut(URL_, async (u, i) => (seen.push(u), inner(u, i)));
+    expect(r.allowed).toBe(false);
+    expect(seen).toEqual(["https://example.test/robots.txt"]);
+  });
+
+  it("an unreadable robots.txt (5xx) means the page and TDM files are never requested", async () => {
+    const seen: string[] = [];
+    const inner = fx(res(503));
+    await checkOptOut(URL_, async (u, i) => (seen.push(u), inner(u, i)));
+    expect(seen).toEqual(["https://example.test/robots.txt"]);
+  });
+
+  it("robots.txt 404 still checks the page headers", async () => {
+    const r = await checkOptOut(URL_, fx(res(404), res(200, "", { "tdm-reservation": "1" })));
+    expect(r.allowed).toBe(false);
+  });
+
+  describe("TDM reservation files", () => {
+    const ok = res(200, "User-agent: *\nAllow: /\n");
+
+    it("absence of any TDM file (404/403/410) does NOT block", async () => {
+      expect((await checkOptOut(URL_, fx(ok))).allowed).toBe(true);
+      expect((await checkOptOut(URL_, fx(ok, res(200), { json: res(403), txt: res(410) }))).allowed).toBe(true);
+    });
+
+    it("a soft-404 HTML page at a TDM path is not a reservation file", async () => {
+      const html = res(200, "<html><body>Not found</body></html>");
+      expect((await checkOptOut(URL_, fx(ok, res(200), { json: html, txt: html }))).allowed).toBe(true);
+    });
+
+    it("tdmrep.json reserving the path blocks", async () => {
+      const json = res(200, JSON.stringify([{ location: "/docs/*", "tdm-reservation": 1 }]));
+      const r = await checkOptOut(URL_, fx(ok, res(200), { json }));
+      expect(r.allowed).toBe(false);
+      expect(r.reasons.join(" ")).toMatch(/tdmrep\.json/);
+    });
+
+    it("tdmrep.json reserving only another path, or with reservation 0, does not block", async () => {
+      const other = res(200, JSON.stringify([{ location: "/private/*", "tdm-reservation": 1 }]));
+      const zero = res(200, JSON.stringify([{ location: "/*", "tdm-reservation": 0 }]));
+      expect((await checkOptOut(URL_, fx(ok, res(200), { json: other }))).allowed).toBe(true);
+      expect((await checkOptOut(URL_, fx(ok, res(200), { json: zero }))).allowed).toBe(true);
+    });
+
+    it("tdmrep.json with a tdm-policy for the path blocks (policy cannot be evaluated)", async () => {
+      const json = res(200, JSON.stringify([{ location: "/*", "tdm-reservation": 0, "tdm-policy": "https://x.test/p.json" }]));
+      expect((await checkOptOut(URL_, fx(ok, res(200), { json }))).allowed).toBe(false);
+    });
+
+    it("FAILS CLOSED: present but unreadable tdmrep.json, or a malformed rule, blocks", async () => {
+      expect((await checkOptOut(URL_, fx(ok, res(200), { json: res(200, "{not json") }))).allowed).toBe(false);
+      expect((await checkOptOut(URL_, fx(ok, res(200), { json: res(200, '{"a":1}') }))).allowed).toBe(false);
+      expect((await checkOptOut(URL_, fx(ok, res(200), { json: res(200, '[{"location":"/*"}]') }))).allowed).toBe(false);
+    });
+
+    it("FAILS CLOSED: a TDM file fetch error, 5xx or 429 is not 'absence' => blocks", async () => {
+      expect((await checkOptOut(URL_, fx(ok, res(200), { json: new Error("dns") }))).allowed).toBe(false);
+      expect((await checkOptOut(URL_, fx(ok, res(200), { txt: res(503) }))).allowed).toBe(false);
+      expect((await checkOptOut(URL_, fx(ok, res(200), { json: res(429) }))).allowed).toBe(false);
+    });
+
+    it("tdm.txt expressing a reservation blocks; reservation 0 does not", async () => {
+      expect((await checkOptOut(URL_, fx(ok, res(200), { txt: res(200, "tdm-reservation: 1\n") }))).allowed).toBe(false);
+      expect((await checkOptOut(URL_, fx(ok, res(200), { txt: res(200, "tdm-reservation: 0\n") }))).allowed).toBe(true);
+    });
+
+    it("tdm.txt that is present but says nothing recognisable blocks (ambiguous)", async () => {
+      expect((await checkOptOut(URL_, fx(ok, res(200), { txt: res(200, "hello") }))).allowed).toBe(false);
+    });
   });
 
   it("FAILS CLOSED: page HEAD returns a non-2xx => blocked", async () => {

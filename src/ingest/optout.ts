@@ -11,6 +11,7 @@ export interface FetchedResponse {
   status: number;
   headers: HeaderReader;
   text(): Promise<string>;
+  arrayBuffer(): Promise<ArrayBuffer>;
 }
 export type Fetcher = (url: string, init?: { method?: string }) => Promise<FetchedResponse>;
 
@@ -167,8 +168,90 @@ export function evaluateResponseSignals(headers: HeaderReader, html = ""): GateR
   return { allowed: reasons.length === 0, reasons };
 }
 
+const looksLikeHtml = (t: string): boolean => /^\s*<(!doctype|html|\?xml)|<html[\s>]/i.test(t);
+
+/** A non-empty robots.txt that is HTML, or has no `field: value` line at all, cannot be trusted. */
+function robotsUnparseable(text: string): boolean {
+  if (looksLikeHtml(text)) return true;
+  const lines = text.split(/\r?\n/).map((l) => l.replace(/#.*$/, "").trim()).filter(Boolean);
+  return lines.length > 0 && !lines.some((l) => /^[A-Za-z][A-Za-z-]*\s*:/.test(l));
+}
+
 /**
- * Full gate for one URL: robots.txt (must be a 200), then the page's own headers via HEAD.
+ * Fetch a published TDM reservation file. Absence (any 4xx except 429, or a soft-404 HTML
+ * page) is NOT ambiguity and does not block; a fetch error, 429 or 5xx cannot be told apart
+ * from a reservation we failed to read, so it blocks. Returns block reasons.
+ */
+async function checkTdmFile(
+  origin: string,
+  file: string,
+  path: string,
+  fetcher: Fetcher,
+  evaluate: (body: string, path: string, where: string) => string[],
+): Promise<string[]> {
+  const where = file;
+  try {
+    const r = await fetcher(`${origin}${file}`);
+    if (r.status >= 400 && r.status < 500 && r.status !== 429) return [];
+    if (r.status < 200 || r.status >= 300) return [`${where} returned HTTP ${r.status} (fail closed)`];
+    const body = await r.text();
+    if (looksLikeHtml(body)) return [];
+    return evaluate(body, path, where);
+  } catch (e) {
+    return [`${where} fetch failed: ${(e as Error).message} (fail closed)`];
+  }
+}
+
+/** TDMRep /.well-known/tdmrep.json: [{location, "tdm-reservation": 0|1, "tdm-policy"?}, ...] */
+function evaluateTdmrepJson(body: string, path: string, where: string): string[] {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(body);
+  } catch {
+    return [`${where} present but not valid JSON (fail closed)`];
+  }
+  if (!Array.isArray(doc)) return [`${where} present but not a rule list (fail closed)`];
+  const reasons: string[] = [];
+  for (const rule of doc) {
+    const o = (typeof rule === "object" && rule !== null ? rule : {}) as Record<string, unknown>;
+    const res = o["tdm-reservation"];
+    if (typeof o.location !== "string" || (res !== 0 && res !== 1 && res !== "0" && res !== "1")) {
+      reasons.push(`${where} contains a malformed rule (fail closed)`);
+      continue;
+    }
+    if (!patternToRegExp(o.location).test(path)) continue;
+    if (res === 1 || res === "1") reasons.push(`${where}: tdm-reservation 1 for ${o.location}`);
+    if (o["tdm-policy"] !== undefined && o["tdm-policy"] !== "") {
+      reasons.push(`${where}: tdm-policy for ${o.location} (policy cannot be evaluated)`);
+    }
+  }
+  return reasons;
+}
+
+/** /tdm.txt: no normative format is known to us, so read `tdm-reservation:` / `tdm-policy:` lines. */
+function evaluateTdmTxt(body: string, _path: string, where: string): string[] {
+  const reasons: string[] = [];
+  let recognised = false;
+  for (const raw of body.split(/\r?\n/)) {
+    const m = /^\s*(tdm-reservation|tdm-policy)\s*:\s*(.*?)\s*(#.*)?$/i.exec(raw);
+    if (!m) continue;
+    recognised = true;
+    if (m[1].toLowerCase() === "tdm-policy") {
+      if (m[2]) reasons.push(`${where}: tdm-policy present (policy cannot be evaluated)`);
+    } else if (m[2] === "1") reasons.push(`${where}: tdm-reservation: 1`);
+    else if (m[2] !== "0") reasons.push(`${where}: unparseable tdm-reservation "${m[2]}" (ambiguous)`);
+  }
+  if (!recognised && body.trim() !== "") reasons.push(`${where} present but expresses nothing recognisable (ambiguous)`);
+  return reasons;
+}
+
+/**
+ * Full gate for one URL:
+ *  1. robots.txt per RFC 9309 §2.3.1: 2xx -> parse (unparseable => closed); 4xx except 429
+ *     ("Unavailable") -> no policy, allowed; 429, 5xx, 3xx or a network error -> closed.
+ *  2. TDM reservation files (absence allowed; present+reserving or unreadable => closed).
+ *  3. The page's own headers via HEAD.
+ * A blocked/unreadable robots.txt stops here: no later request is made.
  * Never throws; every failure path returns `allowed: false` with a reason.
  */
 export async function checkOptOut(url: string, fetcher: Fetcher): Promise<GateResult> {
@@ -180,20 +263,31 @@ export async function checkOptOut(url: string, fetcher: Fetcher): Promise<GateRe
   }
 
   const reasons: string[] = [];
+  const path = parsed.pathname + parsed.search;
 
   try {
     const robots = await fetcher(`${parsed.origin}/robots.txt`);
-    if (robots.status !== 200) {
-      reasons.push(`robots.txt returned HTTP ${robots.status} (fail closed)`);
+    const s = robots.status;
+    if (s >= 200 && s < 300) {
+      const text = await robots.text();
+      if (robotsUnparseable(text)) reasons.push("robots.txt is not parseable (fail closed)");
+      else reasons.push(...evaluateRobots(text, path).reasons);
+    } else if (s >= 400 && s < 500 && s !== 429) {
+      // RFC 9309 §2.3.1.3 "Unavailable": no robots policy exists; access is allowed.
     } else {
-      const r = evaluateRobots(await robots.text(), parsed.pathname + parsed.search);
-      reasons.push(...r.reasons);
+      reasons.push(`robots.txt returned HTTP ${s} (fail closed)`);
     }
   } catch (e) {
     reasons.push(`robots.txt fetch failed: ${(e as Error).message} (fail closed)`);
   }
 
   // A blocked or unreadable robots.txt ends the check: never touch the page itself.
+  if (reasons.length > 0) return { allowed: false, reasons };
+
+  reasons.push(
+    ...(await checkTdmFile(parsed.origin, "/.well-known/tdmrep.json", path, fetcher, evaluateTdmrepJson)),
+    ...(await checkTdmFile(parsed.origin, "/tdm.txt", path, fetcher, evaluateTdmTxt)),
+  );
   if (reasons.length > 0) return { allowed: false, reasons };
 
   try {
