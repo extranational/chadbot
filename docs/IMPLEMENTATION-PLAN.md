@@ -14,7 +14,27 @@
 3. Every answer carries citations with source URL + licence attribution string.
 4. Corpus composition and model selection are **config**, not code.
 
-## Ownership
+## Host limitation — large file reads hang this harness
+
+**Do not `Read` any file larger than ~30 KB.** A `Read` of a file above that size
+never returns: the tool call is issued and no result is ever delivered, so the
+session blocks forever with zero CPU consumption and no error. This is a property of
+the harness host, not of the file or of this project.
+
+Observed and isolated: `docs/research/02-cloudflare-rag-stack.md` (29 KB) reads
+normally; `docs/research/01-corpus-licensing.md` (65 KB) hangs the session every
+time. Two consecutive Phase 0/1 runs died on exactly that read.
+
+Consequences for this project:
+- `docs/CORPUS-CONTRACT.md` is the harness-facing extract of the corpus
+  specification and is the file to read for corpus work.
+- `docs/research/01-corpus-licensing.md` and `docs/research/02-cloudflare-rag-stack.md`
+  are **operator reference only**. Do not read them, and do not reference them from
+  the brief.
+- Keep any specification file the harness must read under ~25 KB. If it grows past
+  that, split it.
+
+## Harness scope and ownership
 
 The harness writes **code**. Anything that touches a live account, a production zone, a second repository, or the public internet is Hermes's, because the harness runs in a hardened container behind an allowlisting egress proxy: it has no Cloudflare credentials, no route to `api.cloudflare.com`, and no write access to `vrsweb`. Assigning those tasks to it would stall on an escalation it cannot resolve.
 
