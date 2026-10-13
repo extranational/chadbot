@@ -68,14 +68,28 @@ no `mode: full` entry carries a licence with `quote_permitted: false`.
 
 ## 5. Ingestion gates (implement as code, not convention)
 
-1. **Opt-out gate, fail closed.** Fetch and parse `robots.txt` (including named AI
-   agents), `Content-Signal`, and `tdm-reservation`/`tdm-policy`. Blocked, ambiguous,
-   or a failed fetch ⇒ do not ingest.
-2. **Provenance per item.** Every uploaded item carries `source_id`, `source_url`,
+1. **Opt-out gate — fail closed on genuine uncertainty, not on defined answers.**
+   Fetch and parse `robots.txt` (including named AI agents), `Content-Signal`, and TDM
+   reservation signals — HTTP header, HTML `<meta>`, `/.well-known/tdmrep.json`, and
+   `/tdm.txt`.
+   - **Block** on: an explicit reservation matching us or the path; robots.txt 5xx, 429,
+     a 3xx, or a network/timeout error; a present-but-unreadable reservation file; an
+     unparseable signal.
+   - **Do not block** on: `robots.txt` 4xx other than 429 — per **RFC 9309 §2.3.1.3**
+     ("Unavailable") that means no policy exists and access is allowed. Nor on the
+     *absence* of a TDM reservation file: no file means no reservation.
+   Treating a defined "no policy exists" answer as ambiguity is not caution, it is a
+   bug: it silently drops legitimate sources.
+2. **Binary types are collected, not converted.** Fetch the bytes for `application/pdf`
+   (and any other type AI Search accepts) and hand them over with provenance metadata.
+   Do **not** implement text extraction — Cloudflare AI Search converts PDFs to markdown
+   natively, including OCR for scanned documents. Enforce its size limits and fail closed
+   above them: 4 MiB for non-OCR formats, 10 MiB when OCR applies.
+3. **Provenance per item.** Every uploaded item carries `source_id`, `source_url`,
    `licence`, `attribution`, `retrieval_date`.
-3. **Pointer entries produce zero items.** Test it.
-4. **No paywalled, gated, or login-walled material.** No shadow libraries, no mirrors.
-5. **Prefer the licensed copy** where the same content exists under a permissive
+4. **Pointer entries produce zero items.** Test it.
+5. **No paywalled, gated, or login-walled material.** No shadow libraries, no mirrors.
+6. **Prefer the licensed copy** where the same content exists under a permissive
    licence elsewhere.
-6. Tests must not hit the network. The CLI runs `--dry-run` for everything except the
+7. Tests must not hit the network. The CLI runs `--dry-run` for everything except the
    upload; the operator performs live ingestion.
