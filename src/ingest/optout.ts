@@ -193,6 +193,9 @@ export async function checkOptOut(url: string, fetcher: Fetcher): Promise<GateRe
     reasons.push(`robots.txt fetch failed: ${(e as Error).message} (fail closed)`);
   }
 
+  // A blocked or unreadable robots.txt ends the check: never touch the page itself.
+  if (reasons.length > 0) return { allowed: false, reasons };
+
   try {
     const head = await fetcher(url, { method: "HEAD" });
     if (head.status < 200 || head.status >= 300) {
