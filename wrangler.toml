@@ -15,10 +15,10 @@ fallthrough = true
 [ai]
 binding = "AI"
 
-# KV namespace for rate-limit and monthly counters. Create it and put the id here.
+# KV namespace for rate-limit and monthly counters.
 [[kv_namespaces]]
 binding = "RATE_LIMIT"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "a2a429ade9e042888d89da683b2a2d9c"
 
 # AI Search instance binding named AI_SEARCH. src/retrieve.ts calls env.AI_SEARCH.search()
 # DIRECTLY, which is the INSTANCE binding form (an `ai_search_namespaces` binding would
@@ -32,5 +32,5 @@ binding = "AI_SEARCH"
 instance_name = "chadbot-passkeys"
 
 [vars]
-AI_GATEWAY_ID = "REPLACE_WITH_GATEWAY_ID"
+AI_GATEWAY_ID = "chadbot"
 # For generation.provider = "external" also set CF_ACCOUNT_ID (var) and CF_AIG_TOKEN (wrangler secret).
