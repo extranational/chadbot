@@ -34,3 +34,10 @@ instance_name = "chadbot-passkeys"
 [vars]
 AI_GATEWAY_ID = "chadbot"
 # For generation.provider = "external" also set CF_ACCOUNT_ID (var) and CF_AIG_TOKEN (wrangler secret).
+
+# Custom domain for the API. `custom_domain = true` makes Cloudflare create the DNS record
+# and certificate itself, so no separate DNS step is needed. This hostname is ALSO baked into
+# the vrsweb page's endpoint and its public/_headers connect-src -- all three must agree.
+[[routes]]
+pattern = "chadbot-api.viewridgesecurity.com"
+custom_domain = true
