@@ -246,11 +246,21 @@ function evaluateTdmTxt(body: string, _path: string, where: string): string[] {
 }
 
 /**
- * Full gate for one URL:
+ * Full gate for one URL, evaluated before its content is fetched:
  *  1. robots.txt per RFC 9309 §2.3.1: 2xx -> parse (unparseable => closed); 4xx except 429
  *     ("Unavailable") -> no policy, allowed; 429, 5xx, 3xx or a network error -> closed.
  *  2. TDM reservation files (absence allowed; present+reserving or unreadable => closed).
- *  3. The page's own headers via HEAD.
+ *
+ * The page's OWN response headers (Content-Signal / tdm-reservation) are deliberately NOT
+ * fetched here. This gate used to issue a HEAD for them, and that caused a FALSE BLOCK on
+ * any host that does not implement HEAD: nvlpubs.nist.gov answers HEAD with 404 while
+ * serving the very same URL as 200 on GET, so NIST SP 800-63B-4 was skipped as though it
+ * were missing. A HEAD's status cannot be trusted to mean what a GET's status means.
+ *
+ * The caller evaluates `evaluateResponseSignals` on the real content response instead --
+ * where those headers are authoritative anyway -- so no coverage is lost, one request is
+ * saved, and a server's HEAD support can no longer silence a legitimate source.
+ *
  * A blocked/unreadable robots.txt stops here: no later request is made.
  * Never throws; every failure path returns `allowed: false` with a reason.
  */
@@ -289,17 +299,6 @@ export async function checkOptOut(url: string, fetcher: Fetcher): Promise<GateRe
     ...(await checkTdmFile(parsed.origin, "/tdm.txt", path, fetcher, evaluateTdmTxt)),
   );
   if (reasons.length > 0) return { allowed: false, reasons };
-
-  try {
-    const head = await fetcher(url, { method: "HEAD" });
-    if (head.status < 200 || head.status >= 300) {
-      reasons.push(`page HEAD returned HTTP ${head.status} (fail closed)`);
-    } else {
-      reasons.push(...evaluateResponseSignals(head.headers).reasons);
-    }
-  } catch (e) {
-    reasons.push(`page header fetch failed: ${(e as Error).message} (fail closed)`);
-  }
 
   return { allowed: reasons.length === 0, reasons };
 }

@@ -24,17 +24,20 @@ interface Tdm {
   txt?: FetchedResponse | Error;
 }
 
-/** Fixture fetcher: robots.txt, TDM files (default 404 = absent) and page (HEAD); no network. */
-function fx(robots: FetchedResponse | Error, page: FetchedResponse | Error = res(200), tdm: Tdm = {}): Fetcher {
+/**
+ * Fixture fetcher: robots.txt and the TDM files only; no network.
+ *
+ * The page itself must NEVER be requested by the gate. That is the regression: a HEAD here
+ * false-blocked hosts that do not implement HEAD. The `page` parameter is kept for
+ * call-site compatibility and must go unused.
+ */
+function fx(robots: FetchedResponse | Error, _page: FetchedResponse | Error = res(200), tdm: Tdm = {}): Fetcher {
   return async (url, init) => {
     let r: FetchedResponse | Error;
     if (url.endsWith("/robots.txt")) r = robots;
     else if (url.endsWith("/.well-known/tdmrep.json")) r = tdm.json ?? res(404);
     else if (url.endsWith("/tdm.txt")) r = tdm.txt ?? res(404);
-    else {
-      expect(init?.method).toBe("HEAD");
-      r = page;
-    }
+    else throw new Error(`the opt-out gate must not request the page: ${url} (${init?.method})`);
     if (r instanceof Error) throw r;
     return r;
   };
@@ -131,9 +134,12 @@ describe("checkOptOut (fixtures, fails closed)", () => {
     expect((await checkOptOut(URL_, fx(res(200, "User-agent: *\nDisallow: /\n")))).allowed).toBe(false);
   });
 
-  it("blocks on a tdm-reservation header from the page", async () => {
-    const r = await checkOptOut(URL_, fx(res(200, ""), res(200, "", { "TDM-Reservation": "1" })));
-    expect(r.allowed).toBe(false);
+  // The page's OWN reservation headers are evaluated by the CALLER on the real content
+  // response, not here -- see tests/ingest.test.ts ("skips when the content response carries
+  // a tdm-reservation header"). This gate must not request the page at all, because a HEAD's
+  // status does not mean what a GET's status means.
+  it("does not evaluate page headers itself: that is the caller's job on the real GET", async () => {
+    expect((await checkOptOut(URL_, fx(res(200, "")))).allowed).toBe(true);
   });
 
   it("FAILS CLOSED: robots.txt fetch throws => blocked", async () => {
@@ -142,9 +148,20 @@ describe("checkOptOut (fixtures, fails closed)", () => {
     expect(r.reasons.join(" ")).toMatch(/robots\.txt.*fail/i);
   });
 
-  it("FAILS CLOSED: page header fetch throws => blocked", async () => {
-    const r = await checkOptOut(URL_, fx(res(200, ""), new Error("timeout")));
-    expect(r.allowed).toBe(false);
+  it("requests only robots.txt and the TDM files -- never the page", async () => {
+    const seen: string[] = [];
+    const f: Fetcher = async (url) => {
+      seen.push(url);
+      return res(404);
+    };
+    expect((await checkOptOut(URL_, f)).allowed).toBe(true);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(
+      seen.every(
+        (u) =>
+          u.endsWith("/robots.txt") || u.endsWith("/.well-known/tdmrep.json") || u.endsWith("/tdm.txt"),
+      ),
+    ).toBe(true);
   });
 
   it("FAILS CLOSED: reading the robots body throws => blocked", async () => {
@@ -183,9 +200,12 @@ describe("checkOptOut (fixtures, fails closed)", () => {
     expect(seen).toEqual(["https://example.test/robots.txt"]);
   });
 
-  it("robots.txt 404 still checks the page headers", async () => {
-    const r = await checkOptOut(URL_, fx(res(404), res(200, "", { "tdm-reservation": "1" })));
-    expect(r.allowed).toBe(false);
+  // Was: "robots.txt 404 still checks the page headers". It no longer does, and that is the
+  // point -- the HEAD it used to issue false-blocked hosts that do not implement HEAD.
+  it("robots.txt 404 (Unavailable) proceeds to the TDM files without touching the page", async () => {
+    const got = await checkOptOut(URL_, fx(res(404)));
+    expect(got.allowed).toBe(true);
+    expect(got.reasons).toEqual([]);
   });
 
   describe("TDM reservation files", () => {
@@ -242,8 +262,15 @@ describe("checkOptOut (fixtures, fails closed)", () => {
     });
   });
 
-  it("FAILS CLOSED: page HEAD returns a non-2xx => blocked", async () => {
-    expect((await checkOptOut(URL_, fx(res(200, ""), res(405)))).allowed).toBe(false);
+  // REGRESSION: nvlpubs.nist.gov answers HEAD with 404 while serving the same URL as 200 on
+  // GET (verified live, with curl's default user-agent -- it is not UA blocking). The gate
+  // used to HEAD the page and fail closed, so NIST SP 800-63B-4 was reported as
+  // "page HEAD returned HTTP 404" and silently skipped. The gate must not touch the page;
+  // the caller evaluates Content-Signal / tdm-reservation on the real GET.
+  it("does not request the page, so a host that 404s on HEAD is not false-blocked", async () => {
+    const got = await checkOptOut(URL_, fx(res(200, "")));
+    expect(got.allowed).toBe(true);
+    expect(got.reasons).toEqual([]);
   });
 
   it("FAILS CLOSED: unparseable URL => blocked", async () => {
