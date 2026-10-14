@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 import { loadManifest, type CorpusEntry } from "../src/corpus";
 import { toMarkdown } from "../src/ingest/convert";
 import { checkOptOut, evaluateResponseSignals, type Fetcher } from "../src/ingest/optout";
+import { uploaderFromEnv } from "./ai-search-uploader";
 
 /** AI Search file-size limits: 4 MiB for non-OCR formats, 10 MiB when OCR applies. */
 export const MAX_BYTES = 4 * 1024 * 1024;
@@ -237,10 +238,12 @@ const offlineFetcher: Fetcher = async () => {
   throw new Error("network disabled (--offline)");
 };
 
-/** The Cloudflare AI Search upload is operator-run; it is deliberately not implemented here. */
+/** Used ONLY for --dry-run. Live uploads build a real uploader from the environment. */
 const unimplementedUploader: Uploader = {
   async upload() {
-    throw new Error("live upload is not implemented in this build: the operator wires the AI Search upload (needs Cloudflare credentials). Use --dry-run.");
+    throw new Error(
+      "internal: the dry-run uploader must never be called (dry-run skips the upload entirely)",
+    );
   },
 };
 
@@ -250,7 +253,7 @@ async function main(): Promise<void> {
     {
       manifest: loadManifest(args.manifest),
       fetcher: args.offline ? offlineFetcher : liveFetcher,
-      uploader: unimplementedUploader,
+      uploader: args.dryRun ? unimplementedUploader : uploaderFromEnv(),
       now: () => new Date(),
     },
     { dryRun: args.dryRun, only: args.only },
