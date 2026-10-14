@@ -10,7 +10,12 @@ export interface ChadbotConfig {
     max_tokens: number;
     temperature: number;
   };
-  serving: { rate_limit_per_ip_per_hour: number; monthly_query_ceiling: number };
+  serving: {
+    rate_limit_per_ip_per_hour: number;
+    monthly_query_ceiling: number;
+    /** Exact browser origins allowed to call /api/chat (CORS). Empty = no cross-origin access. Never "*". */
+    allowed_origins: string[];
+  };
   abstain: { message: string };
 }
 
@@ -48,6 +53,26 @@ function bool(o: Obj, path: string, key: string): boolean {
   return v;
 }
 
+/** Each entry must be a bare http(s) origin (scheme://host[:port]); wildcards and paths are rejected. */
+function origins(o: Obj, path: string, key: string): string[] {
+  const v = o[key];
+  if (v === undefined) return []; // fail closed: no allowlist, no CORS
+  if (!Array.isArray(v)) throw new Error(`config: ${path} must be a list of origins`);
+  return v.map((x, i) => {
+    let ok = false;
+    if (typeof x === "string") {
+      try {
+        const u = new URL(x);
+        ok = (u.protocol === "https:" || u.protocol === "http:") && u.origin === x;
+      } catch {
+        /* not a URL */
+      }
+    }
+    if (!ok) throw new Error(`config: ${path}[${i}] must be an exact origin like https://example.com (no "*", path or trailing slash)`);
+    return x as string;
+  });
+}
+
 export function parseConfig(text: string): ChadbotConfig {
   const raw = parse(text) as unknown;
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
@@ -61,7 +86,7 @@ export function parseConfig(text: string): ChadbotConfig {
 
   const r = section(root, "retrieval", ["max_num_results", "match_threshold", "rerank"]);
   const g = section(root, "generation", ["provider", "model", "max_tokens", "temperature"]);
-  const s = section(root, "serving", ["rate_limit_per_ip_per_hour", "monthly_query_ceiling"]);
+  const s = section(root, "serving", ["rate_limit_per_ip_per_hour", "monthly_query_ceiling", "allowed_origins"]);
   const a = section(root, "abstain", ["message"]);
 
   const provider = str(g, "generation.provider", "provider");
@@ -85,6 +110,7 @@ export function parseConfig(text: string): ChadbotConfig {
     serving: {
       rate_limit_per_ip_per_hour: num(s, "serving.rate_limit_per_ip_per_hour", "rate_limit_per_ip_per_hour", 1, 1e6, true),
       monthly_query_ceiling: num(s, "serving.monthly_query_ceiling", "monthly_query_ceiling", 1, 1e9, true),
+      allowed_origins: origins(s, "serving.allowed_origins", "allowed_origins"),
     },
     abstain: { message: str(a, "abstain.message", "message") },
   };

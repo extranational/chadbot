@@ -11,5 +11,12 @@ generation:
 serving:
   rate_limit_per_ip_per_hour: 20
   monthly_query_ceiling: 3000
+  # Browser origins allowed to call /api/chat (CORS). Exact match; never "*": the rate limit is
+  # per-IP, so a wildcard would let any website spend the monthly budget from a visitor's browser.
+  allowed_origins:
+    - https://www.viewridgesecurity.com
+    - https://viewridgesecurity.com
+    - https://staging.viewridgesecurity.com
+    - http://localhost:3000
 abstain:
   message: "That isn't covered by the passkeys material I have. I can answer questions about WebAuthn, passkey registration and authentication, recovery, and phishing resistance."

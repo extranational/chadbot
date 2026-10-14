@@ -69,9 +69,46 @@ function sseResponse(body: ReadableStream<Uint8Array>): Response {
 }
 const event = (obj: unknown): Uint8Array => enc.encode(`data: ${JSON.stringify(obj)}\n\n`);
 
+const CORS_METHODS = "POST, OPTIONS";
+const CORS_HEADERS = "content-type";
+const CORS_MAX_AGE = "86400";
+
 export function createWorker(getRuntime: (env: Env) => Runtime) {
-  return {
-    async fetch(request: Request, env: Env): Promise<Response> {
+  /** CORS wrapper for /api/chat only: exact-match allowlist from config, no wildcard, Vary: Origin always. */
+  async function withCors(request: Request, env: Env): Promise<Response> {
+    const origin = request.headers.get("origin");
+    let allowlist: string[] = [];
+    try {
+      allowlist = getRuntime(env).config.serving.allowed_origins;
+    } catch {
+      /* handle() reports misconfiguration; with no allowlist no CORS header is sent */
+    }
+    const allowed = origin !== null && allowlist.includes(origin);
+
+    let res: Response;
+    if (request.method === "OPTIONS" && origin !== null) {
+      // Preflight: answered here, before any KV / AI Search / generation access.
+      res = allowed
+        ? new Response(null, {
+            status: 204,
+            headers: {
+              "access-control-allow-methods": CORS_METHODS,
+              "access-control-allow-headers": CORS_HEADERS,
+              "access-control-max-age": CORS_MAX_AGE,
+              "cache-control": "no-store",
+            },
+          })
+        : errorJson(403, "origin_not_allowed", "Origin not allowed.");
+    } else {
+      res = await handle(request, env);
+    }
+    if (allowed) res.headers.set("access-control-allow-origin", origin);
+    res.headers.append("vary", "Origin");
+    return res;
+  }
+
+  async function handle(request: Request, env: Env): Promise<Response> {
+    {
       const url = new URL(request.url);
 
       if (url.pathname === "/healthz" && request.method === "GET") {
@@ -171,6 +208,13 @@ export function createWorker(getRuntime: (env: Env) => Runtime) {
           },
         }),
       );
+    }
+  }
+
+  return {
+    async fetch(request: Request, env: Env): Promise<Response> {
+      if (new URL(request.url).pathname === "/api/chat") return withCors(request, env);
+      return handle(request, env);
     },
   };
 }
