@@ -4,6 +4,7 @@ import { parseConfig, type ChadbotConfig } from "./config";
 import { parseManifest, type CorpusEntry } from "./corpus";
 import { generate, type GenEnv } from "./generate";
 import { checkLimits, type KvLike } from "./limits";
+import { renderNoticesPage, type NoticesDoc } from "./notices";
 import { retrieve, type AiSearchInstance } from "./retrieve";
 
 /** Bindings (wrangler.toml). The operator wires the real ones; tests inject mocks. */
@@ -20,6 +21,8 @@ export interface Env extends GenEnv {
 export interface Runtime {
   config: ChadbotConfig;
   manifest: CorpusEntry[];
+  /** Approved notice copy (content/notices.yaml); required for GET /notices. */
+  notices?: NoticesDoc;
   now?: () => number;
   /** Injected fetch for the external-provider path. */
   fetch?: typeof fetch;
@@ -73,6 +76,22 @@ export function createWorker(getRuntime: (env: Env) => Runtime) {
 
       if (url.pathname === "/healthz" && request.method === "GET") {
         return Response.json({ status: "ok" });
+      }
+      if (url.pathname === "/notices") {
+        if (request.method !== "GET") return errorJson(405, "method_not_allowed", "Use GET.", { allow: "GET" });
+        try {
+          const rt = getRuntime(env);
+          if (!rt.notices) throw new Error("notices not provided");
+          return new Response(renderNoticesPage(rt.notices, rt.manifest), {
+            headers: {
+              "content-type": "text/html; charset=utf-8",
+              "cache-control": "public, max-age=300",
+              "x-content-type-options": "nosniff",
+            },
+          });
+        } catch {
+          return errorJson(500, "misconfigured", "The service is not configured correctly.");
+        }
       }
       if (url.pathname !== "/api/chat") return errorJson(404, "not_found", "Not found.");
       if (request.method !== "POST") return errorJson(405, "method_not_allowed", "Use POST.", { allow: "POST" });
