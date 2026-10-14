@@ -8,7 +8,8 @@
     "test": "vitest run",
     "lint": "tsc --noEmit",
     "build": "tsc --noEmit",
-    "ingest": "tsx scripts/ingest.ts"
+    "ingest": "tsx scripts/ingest.ts",
+    "eval": "tsx scripts/eval.ts"
   },
   "dependencies": {
     "yaml": "^2.9.1"
