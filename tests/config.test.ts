@@ -6,6 +6,10 @@ corpus_manifest: config/corpus.yaml
 retrieval:
   max_num_results: 8
   match_threshold: 0.4
+reranking:
+  enabled: true
+  model: "@cf/baai/bge-reranker-base"
+  match_threshold: 0.4
 generation:
   provider: workers-ai
   model: "@cf/meta/llama-4-scout-17b-16e-instruct"
@@ -22,6 +26,9 @@ describe("config", () => {
   it("loads the shipped config/chadbot.yaml", () => {
     const c = loadConfig("config/chadbot.yaml");
     expect(c.retrieval.max_num_results).toBe(8);
+    expect(c.reranking.enabled).toBe(true);
+    expect(c.reranking.model).toBe("@cf/baai/bge-reranker-base");
+    expect(c.reranking.match_threshold).toBe(0.4);
     expect(c.generation.model).toBe("@cf/meta/llama-4-scout-17b-16e-instruct");
     expect(c.serving.monthly_query_ceiling).toBe(3000);
     expect(c.abstain.message).toMatch(/isn't covered/);
@@ -69,5 +76,28 @@ describe("config", () => {
     expect(() => parseConfig(VALID.replace("match_threshold: 0.4", "match_threshold: 1.5"))).toThrow(
       /match_threshold/,
     );
+  });
+
+  it("requires the reranking block — the per-request control is not optional", () => {
+    // Reranking is sent explicitly on every request, so its absence must fail loudly rather
+    // than silently fall back to whatever the instance happens to be set to.
+    expect(() => parseConfig(VALID.replace(/reranking:\n(.*\n){3}/, ""))).toThrow(/reranking/);
+  });
+
+  it("rejects a non-boolean reranking.enabled", () => {
+    expect(() => parseConfig(VALID.replace("enabled: true", 'enabled: "yes"'))).toThrow(
+      /reranking\.enabled/,
+    );
+  });
+
+  it("rejects an out-of-range reranking.match_threshold", () => {
+    expect(() =>
+      parseConfig(
+        VALID.replace(
+          '  model: "@cf/baai/bge-reranker-base"\n  match_threshold: 0.4',
+          '  model: "@cf/baai/bge-reranker-base"\n  match_threshold: 1.5',
+        ),
+      ),
+    ).toThrow(/reranking\.match_threshold/);
   });
 });

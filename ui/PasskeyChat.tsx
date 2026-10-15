@@ -13,6 +13,33 @@ export interface ChatCitation {
   linkRequired: boolean;
 }
 
+/** One row of the Sources list: one SOURCE, with every [n] that points at it. */
+export interface SourceRow {
+  url: string;
+  /** Every [n] in the answer text that refers to a chunk of this source, ascending. */
+  ns: number[];
+  attribution: string;
+  licenceName: string;
+}
+
+/**
+ * Collapse chunk-level citations into one row per source. Several chunks of the same document
+ * are routinely cited (the same URL, different passages), which listed the same source over and
+ * over; grouping keeps the [n] mapping intact while showing each source once.
+ */
+export function groupSources(citations: readonly ChatCitation[]): SourceRow[] {
+  const rows = new Map<string, SourceRow>();
+  for (const c of [...citations].sort((a, b) => a.n - b.n)) {
+    const existing = rows.get(c.url);
+    if (existing) {
+      if (!existing.ns.includes(c.n)) existing.ns.push(c.n);
+      continue;
+    }
+    rows.set(c.url, { url: c.url, ns: [c.n], attribution: c.attribution, licenceName: c.licenceName });
+  }
+  return [...rows.values()];
+}
+
 export interface PasskeyChatProps {
   /** Full URL of the Worker's POST /api/chat route. */
   endpoint: string;
@@ -140,6 +167,8 @@ export function PasskeyChat({ endpoint, placeholder = "Ask a question about pass
     }
   }
 
+  const sources = groupSources(citations);
+
   return (
     <section className="passkey-chat">
       <form onSubmit={submit}>
@@ -174,28 +203,33 @@ export function PasskeyChat({ endpoint, placeholder = "Ask a question about pass
           <p role="note">This answer could not be tied to any source, so treat it as unverified.</p>
         )}
 
-        {citations.length > 0 && (
+        {sources.length > 0 && (
           <div className="passkey-chat__sources">
             <h3>Sources</h3>
-            <ol>
-              {citations.map((c) => {
-                const href = safeHref(c.url);
+            <ul>
+              {sources.map((s) => {
+                const href = safeHref(s.url);
                 return (
-                  <li key={c.n} value={c.n} data-testid="citation">
+                  <li key={s.url} data-testid="citation">
+                    {/* The number is rendered as text, not left to list styling: the host site's
+                        CSS resets `list-style` on ol/ul, which silently removed the markers. */}
+                    <span className="passkey-chat__ref" data-testid="citation-ref">
+                      {s.ns.map((n) => `[${n}]`).join(" ")}
+                    </span>{" "}
                     {href ? (
                       <a href={href} target="_blank" rel="noopener noreferrer">
-                        {c.url}
+                        {s.url}
                       </a>
                     ) : (
-                      <span>{c.url}</span>
+                      <span>{s.url}</span>
                     )}
                     <div className="passkey-chat__attribution">
-                      {c.attribution} · {c.licenceName}
+                      {s.attribution} · {s.licenceName}
                     </div>
                   </li>
                 );
               })}
-            </ol>
+            </ul>
           </div>
         )}
 

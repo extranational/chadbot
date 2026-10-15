@@ -175,6 +175,7 @@ describe("allowed_origins config validation", () => {
   const base = `
 corpus_manifest: config/corpus.yaml
 retrieval: {max_num_results: 8, match_threshold: 0.4}
+reranking: {enabled: true, model: m, match_threshold: 0.4}
 generation: {provider: workers-ai, model: m, max_tokens: 9, temperature: 0.1}
 serving:
   rate_limit_per_ip_per_hour: 20

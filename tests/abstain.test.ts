@@ -2,10 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { abstainResponse, decideAbstain } from "../src/abstain";
 import { answerQuestion } from "../src/answer";
 import type { Chunk } from "../src/retrieve";
+import { gateThreshold } from "../src/retrieve";
 import { loadConfig } from "../src/config";
 
 const config = loadConfig("config/chadbot.yaml");
-const T = config.retrieval.match_threshold; // 0.4
+const T = gateThreshold(config); // 0.4 — the rerank threshold, since reranking is on
 
 const chunk = (score: number, over: Partial<Chunk> = {}): Chunk => ({
   id: `c-${score}`,

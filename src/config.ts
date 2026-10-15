@@ -4,6 +4,8 @@ import { parse } from "yaml";
 export interface ChadbotConfig {
   corpus_manifest: string;
   retrieval: { max_num_results: number; match_threshold: number };
+  /** Sent per request as ai_search_options.reranking (top level — not inside `retrieval`). */
+  reranking: { enabled: boolean; model: string; match_threshold: number };
   generation: {
     provider: "workers-ai" | "external";
     model: string;
@@ -47,6 +49,12 @@ function num(o: Obj, path: string, key: string, min: number, max: number, int = 
   return v;
 }
 
+function bool(o: Obj, path: string, key: string): boolean {
+  const v = o[key];
+  if (typeof v !== "boolean") throw new Error(`config: ${path} must be a boolean`);
+  return v;
+}
+
 /** Each entry must be a bare http(s) origin (scheme://host[:port]); wildcards and paths are rejected. */
 function origins(o: Obj, path: string, key: string): string[] {
   const v = o[key];
@@ -73,12 +81,13 @@ export function parseConfig(text: string): ChadbotConfig {
     throw new Error("config: document must be a mapping");
   }
   const root = raw as Obj;
-  const top = ["corpus_manifest", "retrieval", "generation", "serving", "abstain"];
+  const top = ["corpus_manifest", "retrieval", "reranking", "generation", "serving", "abstain"];
   for (const k of Object.keys(root)) {
     if (!top.includes(k)) throw new Error(`config: unknown key "${k}"`);
   }
 
   const r = section(root, "retrieval", ["max_num_results", "match_threshold"]);
+  const rr = section(root, "reranking", ["enabled", "model", "match_threshold"]);
   const g = section(root, "generation", ["provider", "model", "max_tokens", "temperature"]);
   const s = section(root, "serving", ["rate_limit_per_ip_per_hour", "monthly_query_ceiling", "allowed_origins"]);
   const a = section(root, "abstain", ["message"]);
@@ -93,6 +102,11 @@ export function parseConfig(text: string): ChadbotConfig {
     retrieval: {
       max_num_results: num(r, "retrieval.max_num_results", "max_num_results", 1, 50, true),
       match_threshold: num(r, "retrieval.match_threshold", "match_threshold", 0, 1),
+    },
+    reranking: {
+      enabled: bool(rr, "reranking.enabled", "enabled"),
+      model: str(rr, "reranking.model", "model"),
+      match_threshold: num(rr, "reranking.match_threshold", "match_threshold", 0, 1),
     },
     generation: {
       provider,

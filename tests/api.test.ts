@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createWorker, type Env, type Runtime } from "../src/index";
 import { loadConfig } from "../src/config";
+import { gateThreshold } from "../src/retrieve";
 import { loadManifest } from "../src/corpus";
 import type { KvLike } from "../src/limits";
 
@@ -177,7 +178,7 @@ describe("INVARIANT #2 end to end: abstention never reaches the model", () => {
   it("below-threshold retrieval: canned message, zero AI.run calls, zero fetch calls, no citations", async () => {
     const fetchSpy = vi.fn();
     const w = createWorker(() => ({ ...rt, fetch: fetchSpy as never }));
-    const { env, run } = makeEnv({ chunks: [rawChunk(W3C, "W3C-SDL-2023", config.retrieval.match_threshold - 0.01)] });
+    const { env, run } = makeEnv({ chunks: [rawChunk(W3C, "W3C-SDL-2023", gateThreshold(config) - 0.01)] });
     const res = await w.fetch(post({ question: "What is the best pizza?" }), env);
     expect(res.status).toBe(200);
     const ev = await events(res);

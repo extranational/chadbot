@@ -155,7 +155,7 @@ export function createWorker(getRuntime: (env: Env) => Runtime) {
       const outcome = await answerQuestion(
         {
           config,
-          retrieve: (q) => retrieve(env.AI_SEARCH, q, config.retrieval, allowed),
+          retrieve: (q) => retrieve(env.AI_SEARCH, q, { ...config.retrieval, reranking: config.reranking }, allowed),
           generate: (messages) => generate(messages, config.generation, env, rt.fetch),
         },
         question,

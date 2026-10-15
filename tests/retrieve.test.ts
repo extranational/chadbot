@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { retrieve, type AiSearchInstance } from "../src/retrieve";
+import { retrieve, gateThreshold, type AiSearchInstance } from "../src/retrieve";
 
-const CFG = { max_num_results: 3, match_threshold: 0.4 };
+const RERANK = { enabled: true, model: "@cf/baai/bge-reranker-base", match_threshold: 0.4 };
+const CFG = { max_num_results: 3, match_threshold: 0.4, reranking: RERANK };
 
 const meta = (over: Record<string, unknown> = {}) => ({
   source_id: "wikipedia-passkey",
@@ -40,14 +41,38 @@ describe("retrieve", () => {
     ]);
   });
 
-  it("sends the question and passes max_num_results and match_threshold to search()", async () => {
+  it("sends the question, the retrieval controls AND the top-level reranking block to search()", async () => {
     const inst = instance([]);
     await retrieve(inst, "q?", CFG);
     expect(inst.search).toHaveBeenCalledTimes(1);
     expect(inst.search.mock.calls[0][0]).toEqual({
       messages: [{ role: "user", content: "q?" }],
-      ai_search_options: { retrieval: { match_threshold: 0.4, max_num_results: 3 } },
+      ai_search_options: {
+        retrieval: { match_threshold: 0.4, max_num_results: 3 },
+        // Top level: inside `retrieval` AI Search would silently ignore it.
+        reranking: { enabled: true, model: "@cf/baai/bge-reranker-base", match_threshold: 0.4 },
+      },
     });
+  });
+
+  it("gateThreshold picks the threshold matching the score that comes back", () => {
+    const retrieval = { max_num_results: 3, match_threshold: 0.4 };
+    expect(gateThreshold({ retrieval, reranking: RERANK })).toBe(0.4); // reranking on: rerank score
+    expect(gateThreshold({ retrieval, reranking: { ...RERANK, enabled: false } })).toBe(0.4); // vector
+    // Different values prove which one is chosen, not just that both happen to be 0.4.
+    const splitR = { ...retrieval, match_threshold: 0.2 };
+    const splitK = { ...RERANK, match_threshold: 0.6 };
+    expect(gateThreshold({ retrieval: splitR, reranking: splitK })).toBe(0.6);
+    expect(gateThreshold({ retrieval: splitR, reranking: { ...splitK, enabled: false } })).toBe(0.2);
+  });
+
+  it("carries the vector and rerank scores off scoring_details", async () => {
+    const inst = instance([
+      raw("a", 0.42, meta(), { scoring_details: { vector_score: 0.62, reranking_score: 0.42 } }),
+    ]);
+    const [c] = await retrieve(inst, "q", CFG);
+    expect(c.vectorScore).toBe(0.62);
+    expect(c.rerankScore).toBe(0.42);
   });
 
   it("applies max_num_results to the response too, keeping the best-scored, sorted descending", async () => {

@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PasskeyChat, type ChatCitation } from "../ui/PasskeyChat";
+import { PasskeyChat, groupSources, type ChatCitation } from "../ui/PasskeyChat";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -113,6 +113,63 @@ describe("PasskeyChat", () => {
     expect(items[0].textContent).toContain("W3C, Web Authentication Level 3");
     expect(items[0].textContent).toContain("W3C Software and Document License");
     expect(container.querySelector('[data-testid="notice"]')).toBeNull();
+  });
+
+  it("numbers every source row explicitly, as text", async () => {
+    // Not left to <ol> markers: the host site's CSS sets `list-style: none` on ol/ul.
+    fetchMock.mockResolvedValue(
+      streamResponse(
+        sse({ token: "A [1] and B [2]." }, {
+          citations: [cite(), cite({ n: 2, chunkId: "c2", sourceId: "wiki", url: "https://en.wikipedia.org/wiki/Passkey_(authentication)" })],
+          notices: [],
+          grounded: true,
+          abstained: false,
+        }),
+      ),
+    );
+    render();
+    await ask("q");
+    const refs = [...container.querySelectorAll('[data-testid="citation-ref"]')].map((el) => el.textContent);
+    expect(refs).toEqual(["[1]", "[2]"]);
+  });
+
+  it("shows a source cited by several chunks ONCE, with all of its [n] markers", async () => {
+    fetchMock.mockResolvedValue(
+      streamResponse(
+        sse({ token: "A [1] and A again [3] and B [2]." }, {
+          citations: [
+            cite({ n: 1 }),
+            cite({ n: 2, chunkId: "c2", sourceId: "wiki", url: "https://en.wikipedia.org/wiki/Passkey_(authentication)", attribution: "Wikipedia, Passkey" }),
+            cite({ n: 3, chunkId: "c3" }), // same source as [1]: different chunk, same URL
+          ],
+          notices: [],
+          grounded: true,
+          abstained: false,
+        }),
+      ),
+    );
+    render();
+    await ask("q");
+    const items = [...container.querySelectorAll('[data-testid="citation"]')];
+    expect(items).toHaveLength(2); // one row per source, not per chunk
+    const urls = items.map((li) => (li.querySelector("a") as HTMLAnchorElement).href);
+    expect(new Set(urls).size).toBe(urls.length); // no source listed twice
+    expect(items[0].querySelector('[data-testid="citation-ref"]')!.textContent).toBe("[1] [3]");
+    expect(items[1].querySelector('[data-testid="citation-ref"]')!.textContent).toBe("[2]");
+  });
+
+  it("groupSources collapses by URL, sorts by [n], and de-duplicates repeated markers", () => {
+    const rows = groupSources([
+      cite({ n: 3 }),
+      cite({ n: 1, sourceId: "wiki", url: "https://en.wikipedia.org/wiki/Passkey_(authentication)", attribution: "Wikipedia, Passkey" }),
+      cite({ n: 2 }),
+      cite({ n: 1, chunkId: "dup" }), // same [n] seen twice
+    ]);
+    expect(rows.map((r) => [r.url, r.ns])).toEqual([
+      ["https://en.wikipedia.org/wiki/Passkey_(authentication)", [1]],
+      ["https://www.w3.org/TR/webauthn-3/", [1, 2, 3]],
+    ]);
+    expect(rows[0].attribution).toBe("Wikipedia, Passkey");
   });
 
   it("displays the share-alike notice when present", async () => {

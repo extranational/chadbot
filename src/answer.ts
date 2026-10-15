@@ -2,7 +2,7 @@ import { abstainResponse, decideAbstain, type AbstainReason } from "./abstain";
 import type { ChadbotConfig } from "./config";
 import type { GenerateResult } from "./generate";
 import { buildMessages, type ChatMessage } from "./prompt";
-import type { Chunk } from "./retrieve";
+import { gateThreshold, type Chunk } from "./retrieve";
 
 export interface AnswerDeps {
   config: ChadbotConfig;
@@ -28,7 +28,9 @@ export async function answerQuestion(deps: AnswerDeps, question: string): Promis
     return { kind: "error", status: 502, error: { code: "retrieval_failed", message: "Search is temporarily unavailable. Please try again." } };
   }
 
-  const decision = decideAbstain(chunks, deps.config.retrieval.match_threshold);
+  // Gate on the threshold that matches the score that came back: rerank scores when reranking
+  // ran, vector similarity when it did not. See gateThreshold().
+  const decision = decideAbstain(chunks, gateThreshold(deps.config));
   if (decision.abstain) {
     const r = abstainResponse(deps.config.abstain.message, decision.reason);
     return { kind: "abstain", message: r.message, reason: r.reason };
