@@ -41,9 +41,9 @@ describe("config", () => {
     );
   });
 
-  it("rejects the retired inert key retrieval.rerank", () => {
-    // Reranking is an instance-level AI Search setting with no per-request override.
-    // A key here reads as a control that does nothing, so the parser refuses it.
+  it("rejects retrieval.rerank (reranking is not a retrieval-level key)", () => {
+    // AI Search takes reranking at ai_search_options.reranking, not inside retrieval; a
+    // mis-placed field is silently ignored by the API, so the parser refuses it here.
     expect(() => parseConfig(VALID.replace("  match_threshold: 0.4", "  match_threshold: 0.4\n  rerank: true"))).toThrow(
       /unknown key.*retrieval\.rerank/i,
     );
