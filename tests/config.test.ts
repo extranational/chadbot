@@ -6,7 +6,6 @@ corpus_manifest: config/corpus.yaml
 retrieval:
   max_num_results: 8
   match_threshold: 0.4
-  rerank: true
 generation:
   provider: workers-ai
   model: "@cf/meta/llama-4-scout-17b-16e-instruct"
@@ -37,8 +36,16 @@ describe("config", () => {
   });
 
   it("rejects unknown nested keys", () => {
-    expect(() => parseConfig(VALID.replace("rerank: true", "rerank: true\n  bogus: 1"))).toThrow(
+    expect(() => parseConfig(VALID.replace("max_num_results: 8", "max_num_results: 8\n  bogus: 1"))).toThrow(
       /unknown key.*retrieval\.bogus/i,
+    );
+  });
+
+  it("rejects the retired inert key retrieval.rerank", () => {
+    // Reranking is an instance-level AI Search setting with no per-request override.
+    // A key here reads as a control that does nothing, so the parser refuses it.
+    expect(() => parseConfig(VALID.replace("  match_threshold: 0.4", "  match_threshold: 0.4\n  rerank: true"))).toThrow(
+      /unknown key.*retrieval\.rerank/i,
     );
   });
 

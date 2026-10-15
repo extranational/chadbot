@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { retrieve, type AiSearchInstance } from "../src/retrieve";
 
-const CFG = { max_num_results: 3, match_threshold: 0.4, rerank: true };
+const CFG = { max_num_results: 3, match_threshold: 0.4 };
 
 const meta = (over: Record<string, unknown> = {}) => ({
   source_id: "wikipedia-passkey",

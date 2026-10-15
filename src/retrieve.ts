@@ -20,10 +20,10 @@ export interface SearchRequest {
 export interface AiSearchInstance {
   search(req: SearchRequest): Promise<unknown>;
 }
+/** Reranking is not here by design: it is an instance-level AI Search setting with no per-request override. */
 export interface RetrievalConfig {
   max_num_results: number;
   match_threshold: number;
-  rerank: boolean;
 }
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() !== "" ? v : undefined);

@@ -2,7 +2,12 @@ corpus_manifest: config/corpus.yaml
 retrieval:
   max_num_results: 8
   match_threshold: 0.4      # tuned in Phase 4
-  rerank: true
+# Reranking is deliberately NOT a key here. It is an instance-level AI Search setting
+# (`reranking` + `reranking_model`; the live chadbot-passkeys instance runs
+# @cf/baai/bge-reranker-base) and has no per-request override — AI Search silently ignores
+# a `reranking` field inside retrieval options, so a key here would be inert config that
+# reads as a control. Change it on the instance (PUT /ai-search/instances/chadbot-passkeys),
+# and assert the instance state in the eval/smoke check so it cannot drift unnoticed.
 generation:
   provider: workers-ai       # workers-ai | external
   model: "@cf/meta/llama-4-scout-17b-16e-instruct"

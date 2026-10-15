@@ -81,7 +81,9 @@ corpus_manifest: config/corpus.yaml
 retrieval:
   max_num_results: 8
   match_threshold: 0.4      # tuned in Phase 4
-  rerank: true
+# NOTE (2026-10-14): `rerank` was removed from this schema. Reranking is an
+# instance-level AI Search setting (@cf/baai/bge-reranker-base on chadbot-passkeys)
+# with no per-request override, so a key here was inert config. See Task 5.1.
 generation:
   provider: workers-ai       # workers-ai | external
   model: "@cf/meta/llama-4-scout-17b-16e-instruct"
